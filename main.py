@@ -10,8 +10,18 @@ import pandas as pd
 intents = discord.Intents.default()
 intents.message_content = True
 
+print(f"TOKEN exists: {os.getenv('DISCORD_BOT_TOKEN') is not None}")
+print(f"GROQ exists: {os.getenv('GROQ_API_KEY') is not None}")
+
+# Get token from environment variable
+TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+GROQ_KEY = os.getenv("GROQ_API_KEY")
+if not TOKEN or not GROQ_KEY:
+    raise ValueError("Set DISCORD_BOT_TOKEN and GROQ_API_KEY environment variables")
+
+
 client = discord.Client(intents=intents)
-groq_client = groq.Client(api_key=os.getenv("GROQ_API_KEY"))
+groq_client = groq.Client(api_key=GROQ_KEY)
 
 REMINDER_SENT = False  # Track if we're expecting a response
 TEST_MODE = False
@@ -139,11 +149,5 @@ async def on_message(message):
         await message.add_reaction("✅")  # Confirm logged
         REMINDER_SENT = False
 
-
-# Get token from environment variable
-TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-GROQ_KEY = os.getenv("GROQ_API_KEY")
-if not TOKEN or not GROQ_KEY:
-    raise ValueError("Set DISCORD_BOT_TOKEN and GROQ_API_KEY environment variables")
 
 client.run(TOKEN)
