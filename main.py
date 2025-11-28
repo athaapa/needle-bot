@@ -10,6 +10,12 @@ import pandas as pd
 intents = discord.Intents.default()
 intents.message_content = True
 
+print("--- ENVIRONMENT DEBUG START ---")
+# Print ALL keys available to the system (don't print values for security)
+for key in os.environ.keys():
+    print(f"Key found: {key}")
+print("--- ENVIRONMENT DEBUG END ---")
+
 print(f"TOKEN exists: {os.getenv('DISCORD_BOT_TOKEN') is not None}")
 print(f"GROQ exists: {os.getenv('GROQ_API_KEY') is not None}")
 
