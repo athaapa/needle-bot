@@ -18,7 +18,7 @@ client = discord.Client(intents=intents)
 groq_client = groq.Client(api_key=os.getenv("GROQ_API_KEY"))
 
 REMINDER_SENT = False  # Track if we're expecting a response
-TEST_MODE = True
+TEST_MODE = False
 
 
 async def validate_win(text):
