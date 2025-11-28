@@ -12,14 +12,33 @@ intents = discord.Intents.default()
 intents.message_content = True
 
 client = discord.Client(intents=intents)
-groq_client = None
+groq_client: groq.Client | None = None
 
 REMINDER_SENT = False  # Track if we're expecting a response
 TEST_MODE = False
 
+# --- DATA PERSISTENCE SETUP ---
+# This points to "data/wins.csv".
+# On Railway, make sure you mount the volume to "/app/data"
+DATA_DIR = "data"
+CSV_FILE = os.path.join(DATA_DIR, "wins.csv")
+
+# Ensure the directory exists immediately
+os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def init_csv():
+    """Creates the CSV with headers if it doesn't exist."""
+    if not os.path.exists(CSV_FILE):
+        with open(CSV_FILE, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["date", "win"])
+            print(f"Created new CSV at {CSV_FILE}")
+
 
 async def validate_win(text):
     """Check if win is output-based, not just time spent"""
+    assert groq_client is not None
     response = groq_client.chat.completions.create(
         model="llama-3.1-8b-instant",
         messages=[
@@ -35,12 +54,14 @@ async def validate_win(text):
 
 
 async def weekly_reflection():
+    assert groq_client is not None
     await client.wait_until_ready()
+    # Replace with your actual User ID
     user = await client.fetch_user(289145869314293760)
 
     while not client.is_closed():
         if TEST_MODE:
-            await asyncio.sleep(30)  # 5 seconds instead of calculated time
+            await asyncio.sleep(30)
         else:
             now = datetime.now()
             # Sunday 8 PM
@@ -55,12 +76,22 @@ async def weekly_reflection():
             wait_seconds = (target - now).total_seconds()
             await asyncio.sleep(wait_seconds)
 
-        # Read wins.csv from past week
-        df = pd.read_csv("wins.csv", names=["date", "win"])
+        # --- UPDATED CSV READING LOGIC ---
+        if os.path.exists(CSV_FILE):
+            # Read from the persistent data file
+            df = pd.read_csv(CSV_FILE, names=["date", "win"], header=0)
+        else:
+            # Handle case where no data exists yet
+            df = pd.DataFrame({"date": [], "win": []})
+
+        # Filter for the last week
         week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
         recent = df[df["date"] >= week_ago]
 
-        wins_text = "\n".join(recent["win"].tolist())
+        if recent.empty:
+            wins_text = "No wins recorded this week."
+        else:
+            wins_text = "\n".join(recent["win"].tolist())
 
         # LLM analyzes
         response = groq_client.chat.completions.create(
@@ -90,7 +121,7 @@ async def daily_reminder():
 
     while not client.is_closed():
         if TEST_MODE:
-            await asyncio.sleep(15)  # 5 seconds instead of calculated time
+            await asyncio.sleep(15)
         else:
             now = datetime.now()
             target = datetime.combine(now.date(), time(21, 0))  # 9 PM
@@ -108,8 +139,9 @@ async def daily_reminder():
 @client.event
 async def on_ready():
     print(f"Logged in as {client.user}")
-    client.loop.create_task(daily_reminder())  # Start reminder loop
-    client.loop.create_task(weekly_reflection())  # Start reminder loop
+    init_csv()  # Initialize the persistent CSV
+    client.loop.create_task(daily_reminder())
+    client.loop.create_task(weekly_reflection())
 
 
 @client.event
@@ -133,7 +165,8 @@ async def on_message(message):
             )
             return
 
-        with open("wins.csv", "a", newline="") as f:
+        # Write to the persistent CSV file
+        with open(CSV_FILE, "a", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([datetime.now().strftime("%Y-%m-%d"), message.content])
 
