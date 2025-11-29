@@ -15,13 +15,15 @@ client = discord.Client(intents=intents)
 groq_client: groq.Client | None = None
 
 REMINDER_SENT = False  # Track if we're expecting a response
+SIGNAL_EXPECTED = False  # Track if we're expecting noise after signal
+current_signal = None  # Store the validated signal temporarily
 TEST_MODE = False
 
 # --- DATA PERSISTENCE SETUP ---
-# This points to "data/wins.csv".
+# This points to "data/signals.csv".
 # On Railway, make sure you mount the volume to "/app/data"
 DATA_DIR = "data"
-CSV_FILE = os.path.join(DATA_DIR, "wins.csv")
+CSV_FILE = os.path.join(DATA_DIR, "signals.csv")
 
 # Ensure the directory exists immediately
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -32,21 +34,21 @@ def init_csv():
     if not os.path.exists(CSV_FILE):
         with open(CSV_FILE, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["date", "win"])
+            writer.writerow(["date", "signal", "noise"])
             print(f"Created new CSV at {CSV_FILE}")
 
 
-async def validate_win(text):
-    """Check if win is output-based, not just time spent"""
+async def validate_signal(text):
+    """Check if signal is output-based, not just time spent"""
     assert groq_client is not None
     response = groq_client.chat.completions.create(
         model="llama-3.1-8b-instant",
         messages=[
             {
                 "role": "system",
-                "content": "You validate daily wins. Output-based wins are specific completions (problems solved, code shipped, concepts implemented). Input-based non-wins are vague time spent (studied X hours, worked on Y). Respond with 'VALID' or 'INVALID: [reason]'.",
+                "content": "You validate daily signals. Output-based signals are specific completions (problems solved, code shipped, concepts implemented). Input-based non-signals are vague time spent (studied X hours, worked on Y). Respond with 'VALID' or 'INVALID: [reason]'.",
             },
-            {"role": "user", "content": f"Win: {text}"},
+            {"role": "user", "content": f"Signal: {text}"},
         ],
         temperature=0.3,
     )
@@ -61,7 +63,7 @@ async def weekly_reflection():
 
     while not client.is_closed():
         if TEST_MODE:
-            await asyncio.sleep(30)
+            await asyncio.sleep(600)
         else:
             now = datetime.now()
             # Sunday 8 PM
@@ -79,19 +81,25 @@ async def weekly_reflection():
         # --- UPDATED CSV READING LOGIC ---
         if os.path.exists(CSV_FILE):
             # Read from the persistent data file
-            df = pd.read_csv(CSV_FILE, names=["date", "win"], header=0)
+            df = pd.read_csv(CSV_FILE, names=["date", "signal", "noise"], header=0)
         else:
             # Handle case where no data exists yet
-            df = pd.DataFrame({"date": [], "win": []})
+            df = pd.DataFrame({"date": [], "signal": [], "noise": []})
 
         # Filter for the last week
         week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
         recent = df[df["date"] >= week_ago]
 
         if recent.empty:
-            wins_text = "No wins recorded this week."
+            signals_text = "No signals recorded this week."
         else:
-            wins_text = "\n".join(recent["win"].tolist())
+            signals_text = "\n".join(recent["signal"].tolist())
+
+        noises_text = (
+            "No noises recorded this week."
+            if recent.empty
+            else "\n".join(recent["noise"].tolist())
+        )
 
         # LLM analyzes
         response = groq_client.chat.completions.create(
@@ -103,7 +111,7 @@ async def weekly_reflection():
                 },
                 {
                     "role": "user",
-                    "content": f"Here are this week's wins:\n{wins_text}\n\nWhat patterns do you see? What should I prioritize next week?",
+                    "content": f"Here are this week's signals:\n{signals_text}\n\nHere are this week's noises:\n{noises_text}\n\nWhat patterns do you see? What should I prioritize next week?",
                 },
             ],
             temperature=0.7,
@@ -121,7 +129,7 @@ async def daily_reminder():
 
     while not client.is_closed():
         if TEST_MODE:
-            await asyncio.sleep(15)
+            await asyncio.sleep(30)
         else:
             now = datetime.now()
             target = datetime.combine(now.date(), time(21, 0))  # 9 PM
@@ -132,7 +140,7 @@ async def daily_reminder():
             wait_seconds = (target - now).total_seconds()
             await asyncio.sleep(wait_seconds)
 
-        await user.send("What moved the needle today?")
+        await user.send("What was signal today?")
         REMINDER_SENT = True
 
 
@@ -146,32 +154,46 @@ async def on_ready():
 
 @client.event
 async def on_message(message):
-    global REMINDER_SENT
+    global REMINDER_SENT, SIGNAL_EXPECTED, current_signal
 
     # Ignore bot's own messages
     if message.author == client.user:
         return
 
-    # Only log DM replies after reminder was sent
-    if isinstance(message.channel, discord.DMChannel) and REMINDER_SENT:
-        validation = await validate_win(message.content)
-        if validation is None:
-            await message.channel.send("Validation failed. Please try again.")
-            return
+    # Handle DM replies
+    if isinstance(message.channel, discord.DMChannel):
+        if REMINDER_SENT:
+            # Expecting signal
+            validation = await validate_signal(message.content)
+            if validation is None:
+                await message.channel.send("Validation failed. Please try again.")
+                return
 
-        if validation.startswith("INVALID"):
-            await message.channel.send(
-                f"⚠️ {validation}\nWhat specifically did you complete?"
-            )
-            return
+            if validation.startswith("INVALID"):
+                await message.channel.send(
+                    f"⚠️ {validation}\nWhat specifically did you complete?"
+                )
+                return
 
-        # Write to the persistent CSV file
-        with open(CSV_FILE, "a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([datetime.now().strftime("%Y-%m-%d"), message.content])
+            # Valid signal
+            await message.add_reaction("✅")
+            await message.channel.send("What was noise today?")
+            current_signal = message.content
+            REMINDER_SENT = False
+            SIGNAL_EXPECTED = True
+        elif SIGNAL_EXPECTED:
+            # Expecting noise
+            noise = message.content
+            # Write to the persistent CSV file
+            with open(CSV_FILE, "a", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(
+                    [datetime.now().strftime("%Y-%m-%d"), current_signal, noise]
+                )
 
-        await message.add_reaction("✅")  # Confirm logged
-        REMINDER_SENT = False
+            await message.add_reaction("✅")  # Confirm logged
+            SIGNAL_EXPECTED = False
+            current_signal = None
 
 
 if __name__ == "__main__":
